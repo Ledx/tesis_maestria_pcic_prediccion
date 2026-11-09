@@ -78,7 +78,7 @@ WEIGHT_DECAY = 1e-4
 # Durante las primeras épocas se congela el backbone.
 FREEZE_BACKBONE = True
 # Número de épocas con backbone congelado.
-FREEZE_EPOCHS = 5
+FREEZE_EPOCHS = 15
 RANDOM_SEED = 42
 TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
@@ -281,9 +281,9 @@ class VideoSwinClassifier(nn.Module):
         # El modelo original clasifica 400 clases de Kinetics.
         # Sustituimos la cabeza por una de 2 clases.
         input_features = self.backbone.head.in_features
-        self.backbone.head = nn.Linear(
-            input_features,
-            num_classes,
+        self.backbone.head = nn.Sequential(
+            nn.Dropout(p=0.5),
+            nn.Linear(input_features, num_classes)
         )
         if freeze_backbone:
             for name, parameter in self.backbone.named_parameters():

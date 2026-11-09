@@ -77,11 +77,11 @@ ANTICIPATION_TIMES = [
 # ViT
 # ------------------------------------------------------------
 PATCH_SIZE = 16
-EMBED_DIM = 256
+EMBED_DIM = 128
 NUM_HEADS = 8
 NUM_SPATIAL_LAYERS = 4
 SPATIAL_MLP_DIM = 512
-DROPOUT = 0.1
+DROPOUT = 0.4
 # ------------------------------------------------------------
 # Transformer temporal
 # ------------------------------------------------------------
@@ -90,10 +90,10 @@ TEMPORAL_MLP_DIM = 512
 # ------------------------------------------------------------
 # Entrenamiento
 # ------------------------------------------------------------
-BATCH_SIZE = 4
+BATCH_SIZE = 8
 NUM_EPOCHS = 40
 LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 1e-4
+WEIGHT_DECAY = 1e-2
 # Peso de la pérdida de características
 LAMBDA_FEATURE = 1.0
 # Peso de cosine loss

@@ -27,6 +27,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms 
+import torchvision.transforms.functional as TF
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
@@ -321,6 +323,39 @@ def normalize_frames(frames):
 # ============================================================
 # 10. DATASET
 # ============================================================
+def apply_video_augmentation(observed, future):
+    """
+    observed: Tensor [T_obs, C, H, W]
+    future: Tensor [T_fut, C, H, W]
+    """
+    # 1. Flip Horizontal aleatorio
+    if random.random() > 0.5:
+        observed = TF.hflip(observed)
+        future = TF.hflip(future)
+        
+    # 2. Crop Aleatorio Coherente
+    i, j, h, w = transforms.RandomCrop.get_params(
+        observed, output_size=(192, 192)
+    )
+    observed = TF.crop(observed, i, j, h, w)
+    future = TF.crop(future, i, j, h, w)
+    
+    observed = TF.resize(observed, [IMAGE_SIZE, IMAGE_SIZE])
+    future = TF.resize(future, [IMAGE_SIZE, IMAGE_SIZE])
+    
+    # 3. Color Jitter (aplicado por igual)
+    if random.random() > 0.5:
+        brightness_factor = random.uniform(0.8, 1.2)
+        contrast_factor = random.uniform(0.8, 1.2)
+        
+        observed = TF.adjust_brightness(observed, brightness_factor)
+        future = TF.adjust_brightness(future, brightness_factor)
+        
+        observed = TF.adjust_contrast(observed, contrast_factor)
+        future = TF.adjust_contrast(future, contrast_factor)
+        
+    return observed, future
+
 class DesAnticipationDataset(
     Dataset
 ):
@@ -471,37 +506,19 @@ class DesAnticipationDataset(
             future
         )
         # ----------------------------------------------------
-        # Convertir:
-        #
-        # T,H,W,C
-        #
-        # ->
-        #
-        # T,C,H,W
+        # Convertir: T,H,W,C -> T,C,H,W
         # ----------------------------------------------------
-        observed = torch.from_numpy(
-            observed
-        ).permute(
-            0,
-            3,
-            1,
-            2
-        ).float()
-        future = torch.from_numpy(
-            future
-        ).permute(
-            0,
-            3,
-            1,
-            2
-        ).float()
+        observed = torch.from_numpy(observed).permute(0, 3, 1, 2).float()
+        future = torch.from_numpy(future).permute(0, 3, 1, 2).float()
+
+        # Aplicar aumento en entrenamiento
+        if self.training:
+            observed, future = apply_video_augmentation(observed, future)
+
         return {
             "observed": observed,
             "future": future,
-            "anticipation": torch.tensor(
-                sample["anticipation"],
-                dtype=torch.float32
-            ),
+            "anticipation": torch.tensor(sample["anticipation"], dtype=torch.float32),
             "video": str(video_path)
         }
 # ============================================================

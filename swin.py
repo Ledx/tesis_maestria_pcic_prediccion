@@ -42,6 +42,8 @@ from torchvision.models.video import (
     swin3d_t,
     Swin3D_T_Weights,
 )
+from torchvision import transforms
+
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
@@ -222,35 +224,30 @@ def read_video_frames(
 # DATASET
 # ============================================================
 class VideoDataset(Dataset):
-    def __init__(
-        self,
-        samples,
-        num_frames=NUM_FRAMES,
-        image_size=IMAGE_SIZE,
-    ):
+    def __init__(self, samples, num_frames=NUM_FRAMES, image_size=IMAGE_SIZE, transform=None):
         self.samples = samples
         self.num_frames = num_frames
         self.image_size = image_size
+        self.transform = transform
+
     def __len__(self):
         return len(self.samples)
+
     def __getitem__(self, index):
         sample = self.samples[index]
         video_path = sample["path"]
         label = sample["label"]
-        try:
-            video = read_video_frames(
-                video_path=video_path,
-                num_frames=self.num_frames,
-                image_size=self.image_size,
-            )
-        except Exception as error:
-            raise RuntimeError(
-                f"Error leyendo {video_path}: {error}"
-            ) from error
-        return video, torch.tensor(
-            label,
-            dtype=torch.long,
+        
+        video = read_video_frames(
+            video_path=video_path,
+            num_frames=self.num_frames,
+            image_size=self.image_size,
         )
+        # video es [T, C, H, W]
+        if self.transform is not None:
+            video = self.transform(video)
+
+        return video, torch.tensor(label, dtype=torch.long)
 # ============================================================
 # MODELO
 # ============================================================
@@ -603,10 +600,17 @@ def main():
         test_samples,
         "Prueba",
     )
+    # Transformación para entrenamiento (aplicada a tensores [T, C, H, W])
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    ])
     train_dataset = VideoDataset(
         train_samples,
         num_frames=NUM_FRAMES,
         image_size=IMAGE_SIZE,
+        transform=train_transform
     )
     val_dataset = VideoDataset(
         val_samples,

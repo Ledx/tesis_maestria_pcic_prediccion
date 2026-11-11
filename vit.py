@@ -12,6 +12,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from torchvision import transforms
+from torchvision.models import vit_b_16, ViT_B_16_Weights
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -188,8 +189,13 @@ class VideoDataset(Dataset):
         frames = self.read_video(video_path)
 
         processed_frames = []
+        
+        # Fijar la semilla de PyTorch para garantizar consistencia dentro de la secuencia
+        seed = np.random.randint(2147483647)
+
         for frame in frames:
             if self.transform is not None:
+                torch.manual_seed(seed) # Mismo estado aleatorio para cada frame del clip
                 frame = self.transform(frame)
             processed_frames.append(frame)
 
@@ -216,7 +222,7 @@ class PatchEmbedding(nn.Module):
 
 class VisionTransformer(nn.Module):
     def __init__(
-        self, image_size=224, patch_size=16, num_classes=2,
+        self, image_size=224, patch_size=16, num_classes=NUM_CLASSES,
         embed_dim=256, num_heads=8, num_layers=6, mlp_dim=512, dropout=0.1
     ):
         super().__init__()
@@ -251,7 +257,7 @@ class VisionTransformer(nn.Module):
 
 
 class VideoViT(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=NUM_CLASSES):
         super().__init__()
         self.vit = VisionTransformer(
             image_size=IMAGE_SIZE, patch_size=PATCH_SIZE, num_classes=EMBED_DIM,

@@ -307,13 +307,32 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
+    # Crear el modelo
     model = VideoMViTClassifier(num_classes=NUM_CLASSES).to(device)
 
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nParámetros totales MViT: {total_params:,}")
+    # Congelamiento Parcial (Congelar los primeros 12 bloques de 16)
+    for i, block in enumerate(model.backbone.blocks):
+        if i < 12:
+            for param in block.parameters():
+                param.requires_grad = False
 
+    # Calcular e imprimir parámetros (Totales vs Entrenables)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    print(f"\nParámetros totales MViT: {total_params:,}")
+    print(f"Parámetros entrenables:  {trainable_params:,}") # <- Esto te confirmará el congelamiento
+
+    # Definir función de pérdida (NUNCA QUITARLA)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    
+    # Definir el optimizador (ATENCIÓN: Pasar solo los parámetros entrenables)
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()), # <- Cambio crucial aquí
+        lr=LEARNING_RATE, 
+        weight_decay=WEIGHT_DECAY
+    )
+    
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     best_f1 = 0.0

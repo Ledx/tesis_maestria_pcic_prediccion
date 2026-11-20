@@ -12,6 +12,8 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from torchvision import transforms
+from torchvision.models import vit_b_16, ViT_B_16_Weights
+
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -182,64 +184,86 @@ class PatchEmbedding(nn.Module):
         x = x.transpose(1, 2)
         return x
 
+
+
 class ViViT(nn.Module):
-    def __init__(self, image_size=224, patch_size=16, num_frames=16, num_classes=2,
-                 embed_dim=256, num_heads=8, num_layers_spatial=4, num_layers_temporal=4,
-                 mlp_dim=512, dropout=0.1):
+    def __init__(self, num_frames=16, num_classes=2, num_temporal_layers=2, freeze_spatial=True):
         super().__init__()
-        self.patch_embedding = PatchEmbedding(image_size=image_size, patch_size=patch_size, embed_dim=embed_dim)
-        num_patches = self.patch_embedding.num_patches
         
-        self.spatial_cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
-        self.spatial_pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, embed_dim))
+        # ==========================================
+        # 1. ENCODER ESPACIAL (Preentrenado en ImageNet)
+        # ==========================================
+        self.spatial_vit = vit_b_16(weights=ViT_B_16_Weights.DEFAULT)
+        embed_dim = 768 # Dimensión interna del vit_b_16
         
-        spatial_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, nhead=num_heads, dim_feedforward=mlp_dim,
-            dropout=dropout, activation="gelu", batch_first=True, norm_first=True
-        )
-        self.spatial_transformer = nn.TransformerEncoder(spatial_layer, num_layers=num_layers_spatial)
-        
+        # Reemplazamos la cabeza final (1000 clases) por Identity 
+        # para obtener directamente el vector de características de 768 dims
+        self.spatial_vit.heads = nn.Identity()
+
+        # Congelar los pesos espaciales (Recomendado para datasets pequeños)
+        if freeze_spatial:
+            for param in self.spatial_vit.parameters():
+                param.requires_grad = False
+                
+        # ==========================================
+        # 2. ENCODER TEMPORAL (Entrenado desde cero)
+        # ==========================================
         self.temporal_cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.temporal_pos_embedding = nn.Parameter(torch.randn(1, num_frames + 1, embed_dim))
         
         temporal_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, nhead=num_heads, dim_feedforward=mlp_dim,
-            dropout=dropout, activation="gelu", batch_first=True, norm_first=True
+            d_model=embed_dim, 
+            nhead=8, 
+            dim_feedforward=2048,
+            dropout=0.4, # Dropout alto para regularizar
+            activation="gelu", 
+            batch_first=True, 
+            norm_first=True
         )
-        self.temporal_transformer = nn.TransformerEncoder(temporal_layer, num_layers=num_layers_temporal)
+        self.temporal_transformer = nn.TransformerEncoder(temporal_layer, num_layers=num_temporal_layers)
         
         self.norm = nn.LayerNorm(embed_dim)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(0.4)
         
+        # ==========================================
+        # 3. CABEZA DE CLASIFICACIÓN
+        # ==========================================
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, 128),
             nn.GELU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),
             nn.Linear(128, num_classes)
         )
 
     def forward(self, video):
+        # video shape: [Batch, Tiempo, Canales, Alto, Ancho]
         B, T, C, H, W = video.shape
+        
+        # --- SPATIAL ENCODER ---
         x = video.view(B * T, C, H, W)
-        x = self.patch_embedding(x)
         
-        cls_tokens = self.spatial_cls_token.expand(B * T, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-        x = x + self.spatial_pos_embedding
-        x = self.dropout(x)
-        x = self.spatial_transformer(x)
+        # Extraemos las características de cada frame. 
+        # Salida: [Batch * Tiempo, 768]
+        spatial_features = self.spatial_vit(x) 
         
-        frame_features = x[:, 0]
-        frame_features = self.norm(frame_features)
+        # --- TEMPORAL ENCODER ---
+        # Reconstruimos la dimensión temporal: [Batch, Tiempo, 768]
+        x_temp = spatial_features.view(B, T, -1) 
         
-        x_temp = frame_features.view(B, T, -1)
+        # Añadimos el token CLS temporal y las posiciones temporales
         temp_cls_tokens = self.temporal_cls_token.expand(B, -1, -1)
-        x_temp = torch.cat((temp_cls_tokens, x_temp), dim=1)
+        x_temp = torch.cat((temp_cls_tokens, x_temp), dim=1) # [B, T+1, 768]
         x_temp = x_temp + self.temporal_pos_embedding
         x_temp = self.dropout(x_temp)
-        x_temp = self.temporal_transformer(x_temp)
         
-        video_features = x_temp[:, 0]
+        # Modelamos la relación entre los fotogramas
+        x_temp = self.temporal_transformer(x_temp) 
+        
+        # Extraemos la representación de todo el video (Token CLS temporal)
+        video_features = x_temp[:, 0] # [B, 768]
+        video_features = self.norm(video_features)
+        
+        # --- CLASIFICACIÓN FINAl ---
         logits = self.classifier(video_features)
         return logits
 
@@ -378,14 +402,28 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
 
-    model = ViViT(num_classes=NUM_CLASSES, num_frames=NUM_FRAMES, embed_dim=EMBED_DIM, num_heads=NUM_HEADS,
-                  num_layers_spatial=NUM_LAYERS_SPATIAL, num_layers_temporal=NUM_LAYERS_TEMPORAL, mlp_dim=MLP_DIM, dropout=DROPOUT).to(device)
+    # Instanciar el nuevo modelo
+    model = ViViT(
+        num_frames=NUM_FRAMES, 
+        num_classes=NUM_CLASSES,
+        num_temporal_layers=2, # 2 capas son suficientes para 16 frames
+        freeze_spatial=True    # Evita el colapso inicial
+    ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"\nParámetros totales ViViT: {total_params:,}")
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\nParámetros totales: {total_params:,}")
+    print(f"Parámetros entrenables: {trainable_params:,}")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    
+    # ATENCIÓN AQUÍ: Pasamos al optimizador SOLO los parámetros que requieren gradiente
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()), 
+        lr=LEARNING_RATE, 
+        weight_decay=WEIGHT_DECAY
+    )
+    
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     best_f1 = 0.0

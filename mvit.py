@@ -85,12 +85,14 @@ def get_video_paths(dataset_dir):
 # Transformaciones (MViT espera [C, T, H, W])
 train_transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    # Crop agresivo: Obliga a la red a clasificar basándose en partes del video
+    transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.5, 1.0)), 
     transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomRotation(degrees=10),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.RandomRotation(degrees=15),
+    # Modificación drástica de color y contraste
+    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225]) # Kinetics mean/std
+    transforms.Normalize(mean=[0.45, 0.45, 0.45], std=[0.225, 0.225, 0.225])
 ])
 
 test_transform = transforms.Compose([
@@ -310,11 +312,13 @@ if __name__ == '__main__':
     # Crear el modelo
     model = VideoMViTClassifier(num_classes=NUM_CLASSES).to(device)
 
-    # Congelamiento Parcial (Congelar los primeros 12 bloques de 16)
-    for i, block in enumerate(model.backbone.blocks):
-        if i < 12:
-            for param in block.parameters():
-                param.requires_grad = False
+    # Congelar TODO el backbone
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # 3. Descongelar ÚNICAMENTE la cabeza clasificadora final
+    for param in model.backbone.head.parameters():
+        param.requires_grad = True
 
     # Calcular e imprimir parámetros (Totales vs Entrenables)
     total_params = sum(p.numel() for p in model.parameters())
@@ -323,12 +327,12 @@ if __name__ == '__main__':
     print(f"\nParámetros totales MViT: {total_params:,}")
     print(f"Parámetros entrenables:  {trainable_params:,}") # <- Esto te confirmará el congelamiento
 
-    # Definir función de pérdida (NUNCA QUITARLA)
+    # Definir función de pérdida
     criterion = nn.CrossEntropyLoss()
     
     # Definir el optimizador (ATENCIÓN: Pasar solo los parámetros entrenables)
     optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), # <- Cambio crucial aquí
+        filter(lambda p: p.requires_grad, model.parameters()), 
         lr=LEARNING_RATE, 
         weight_decay=WEIGHT_DECAY
     )
@@ -336,6 +340,11 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     best_f1 = 0.0
+
+    patience = 5  # Cuántas épocas esperaremos si la pérdida no mejora
+    patience_counter = 0
+    best_val_loss = float('inf') # Ahora buscamos la pérdida MÁS BAJA
+    
     history = {"train_loss": [], "val_loss": [], "train_accuracy": [], "val_accuracy": [], "train_f1": [], "val_f1": []}
 
     print("\nINICIANDO ENTRENAMIENTO...")
@@ -344,6 +353,7 @@ if __name__ == '__main__':
         val_loss, val_metrics = validate(model, val_loader, criterion)
         scheduler.step()
 
+        # Guardar historial
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         history["train_accuracy"].append(train_metrics[0])
@@ -356,11 +366,27 @@ if __name__ == '__main__':
         print(f"Train Acc:  {train_metrics[0]:.4f} | Val Acc:  {val_metrics[0]:.4f}")
         print(f"Train F1:   {train_metrics[3]:.4f} | Val F1:   {val_metrics[3]:.4f}")
 
-        if val_metrics[3] > best_f1:
-            best_f1 = val_metrics[3]
-            torch.save({"model_state_dict": model.state_dict()}, OUTPUT_DIR / "best_mvit.pth")
-            print("✓ Mejor modelo guardado")
+        # ==========================================
+        # LÓGICA DE EARLY STOPPING
+        # ==========================================
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0 # Reiniciamos el contador porque hubo mejora
             
+            # Guardamos el modelo porque tiene la pérdida de validación más baja
+            torch.save({"model_state_dict": model.state_dict()}, OUTPUT_DIR / "best_mvit.pth")
+            print(f"✓ Mejor modelo guardado (Val Loss bajó a {val_loss:.4f})")
+        else:
+            patience_counter += 1
+            print(f"Val Loss no mejoró. Paciencia: {patience_counter}/{patience}")
+            
+            if patience_counter >= patience:
+                print("\n" + "="*50)
+                print(f"[!] EARLY STOPPING ACTIVADO en la época {epoch + 1}.")
+                print(f"[!] La red empezó a sobreajustarse. Entrenamiento detenido.")
+                print("="*50)
+                break # Rompe el bucle for de las épocas
+
     print("\nENTRENAMIENTO TERMINADO")
 
     # Guardar historial

@@ -103,12 +103,18 @@ def get_video_paths(dataset_dir):
                 videos.append((str(video_path), class_id))
     return videos
 
+# ==========================================
+# AUMENTO DE DATOS AGRESIVO (ENTRENAMIENTO)
+# ==========================================
 train_transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    # Recortes aleatorios grandes que obligan a la red a no depender de los bordes
+    transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.5, 1.0)), 
+    # Volteo y rotaciones
     transforms.RandomHorizontalFlip(p=0.5),
-    transforms.RandomRotation(degrees=10),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.RandomRotation(degrees=15),
+    # Distorsión agresiva de color y contraste
+    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -229,10 +235,10 @@ class ViViT(nn.Module):
         # 3. CABEZA DE CLASIFICACIÓN
         # ==========================================
         self.classifier = nn.Sequential(
-            nn.Linear(embed_dim, 128),
+            nn.Linear(embed_dim, 64), 
             nn.GELU(),
-            nn.Dropout(0.4),
-            nn.Linear(128, num_classes)
+            nn.Dropout(0.6), 
+            nn.Linear(64, num_classes)
         )
 
     def forward(self, video):
@@ -427,6 +433,13 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     best_f1 = 0.0
+    # ==========================================
+    # CONFIGURACIÓN DE EARLY STOPPING ESTRICTO
+    # ==========================================
+    patience = 5  # Número máximo de épocas sin mejora permitidas
+    patience_counter = 0
+    best_val_loss = float('inf') # Ahora guardamos el modelo minimizando el Loss
+    
     history = {"train_loss": [], "val_loss": [], "train_accuracy": [], "val_accuracy": [], "train_f1": [], "val_f1": []}
 
     print("\nINICIANDO ENTRENAMIENTO...")
@@ -447,10 +460,26 @@ if __name__ == '__main__':
         print(f"Train Acc:  {train_metrics[0]:.4f} | Val Acc:  {val_metrics[0]:.4f}")
         print(f"Train F1:   {train_metrics[3]:.4f} | Val F1:   {val_metrics[3]:.4f}")
 
-        if val_metrics[3] > best_f1:
-            best_f1 = val_metrics[3]
+        # ==========================================
+        # LÓGICA DE DETENCIÓN
+        # ==========================================
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0 # Reiniciar contador al mejorar
+            
+            # Guardar el modelo basándose en la menor pérdida
             torch.save({"model_state_dict": model.state_dict()}, OUTPUT_DIR / "best_vivit.pth")
-            print("✓ Mejor modelo guardado")
+            print(f"✓ Mejor modelo guardado (Val Loss bajó a {val_loss:.4f})")
+        else:
+            patience_counter += 1
+            print(f"⚠ Val Loss no mejoró. Paciencia: {patience_counter}/{patience}")
+            
+            if patience_counter >= patience:
+                print("\n" + "="*50)
+                print(f"[!] EARLY STOPPING ACTIVADO en la época {epoch + 1}.")
+                print(f"[!] La red empezó a sobreajustarse. Entrenamiento detenido.")
+                print("="*50)
+                break # Rompe el ciclo y pasa directamente a la evaluación final
 
     print("\nENTRENAMIENTO TERMINADO")
 
